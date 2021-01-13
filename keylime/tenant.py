@@ -131,6 +131,73 @@ class Tenant():
 
         return my_cert, my_priv_key
 
+    def process_allowlist(self, args):
+        # Set up PCR values
+        tpm_policy = config.get('tenant', 'tpm_policy')
+        if "tpm_policy" in args and args["tpm_policy"] is not None:
+            tpm_policy = args["tpm_policy"]
+        self.tpm_policy = TPM_Utilities.readPolicy(tpm_policy)
+        logger.info(f"TPM PCR Mask from policy is {self.tpm_policy['mask']}")
+
+        vtpm_policy = config.get('tenant', 'vtpm_policy')
+        if "vtpm_policy" in args and args["vtpm_policy"] is not None:
+            vtpm_policy = args["vtpm_policy"]
+        self.vtpm_policy = TPM_Utilities.readPolicy(vtpm_policy)
+        logger.info(f"TPM PCR Mask from policy is {self.vtpm_policy['mask']}")
+
+        if args.get("ima_sign_verification_keys") is not None:
+            # Auto-enable IMA (or-bit mask)
+            self.tpm_policy['mask'] = "0x%X" % (
+                    int(self.tpm_policy['mask'], 0) | (1 << config.IMA_PCR))
+
+            # Add all IMA file signing verification keys to a keyring
+            ima_keyring = ima_file_signatures.ImaKeyring()
+            for filename in args["ima_sign_verification_keys"]:
+                pubkey = ima_file_signatures.get_pubkey_from_file(filename)
+                if not pubkey:
+                    raise UserError(
+                        "File '%s' is not a file with a key" % filename)
+                ima_keyring.add_pubkey(pubkey)
+            self.ima_sign_verification_keys = ima_keyring.to_string()
+
+        # Read command-line path string allowlist
+        al_data = None
+        if "allowlist" in args and args["allowlist"] is not None:
+
+            # Auto-enable IMA (or-bit mask)
+            self.tpm_policy['mask'] = "0x%X" % (
+                    int(self.tpm_policy['mask'], 0) | (1 << config.IMA_PCR))
+
+            if isinstance(args["allowlist"], str):
+                if args["allowlist"] == "default":
+                    args["allowlist"] = config.get(
+                        'tenant', 'allowlist')
+                al_data = ima.read_allowlist(args["allowlist"])
+            elif isinstance(args["allowlist"], list):
+                al_data = args["allowlist"]
+            else:
+                raise UserError("Invalid allowlist provided")
+
+        # Read command-line path string IMA exclude list
+        excl_data = None
+        if "ima_exclude" in args and args["ima_exclude"] is not None:
+            if isinstance(args["ima_exclude"], str):
+                if args["ima_exclude"] == "default":
+                    args["ima_exclude"] = config.get(
+                        'tenant', 'ima_excludelist')
+                excl_data = ima.read_excllist(args["ima_exclude"])
+            elif isinstance(args["ima_exclude"], list):
+                excl_data = args["ima_exclude"]
+            else:
+                raise UserError("Invalid exclude list provided")
+
+        # Set up IMA
+        if TPM_Utilities.check_mask(self.tpm_policy['mask'], config.IMA_PCR) or \
+                TPM_Utilities.check_mask(self.vtpm_policy['mask'],
+                                         config.IMA_PCR):
+            # Process allowlists
+            self.allowlist = ima.process_allowlists(al_data, excl_data)
+
     def init_add(self, args):
         """ Set up required values. Command line options can overwrite these config values
 
@@ -170,70 +237,7 @@ class Tenant():
         self.accept_tpm_signing_algs = config.get(
             'tenant', 'accept_tpm_signing_algs').split(',')
 
-        # Set up PCR values
-        tpm_policy = config.get('tenant', 'tpm_policy')
-        if "tpm_policy" in args and args["tpm_policy"] is not None:
-            tpm_policy = args["tpm_policy"]
-        self.tpm_policy = TPM_Utilities.readPolicy(tpm_policy)
-        logger.info(f"TPM PCR Mask from policy is {self.tpm_policy['mask']}")
-
-        vtpm_policy = config.get('tenant', 'vtpm_policy')
-        if "vtpm_policy" in args and args["vtpm_policy"] is not None:
-            vtpm_policy = args["vtpm_policy"]
-        self.vtpm_policy = TPM_Utilities.readPolicy(vtpm_policy)
-        logger.info(f"TPM PCR Mask from policy is {self.vtpm_policy['mask']}")
-
-        if args.get("ima_sign_verification_keys") is not None:
-            # Auto-enable IMA (or-bit mask)
-            self.tpm_policy['mask'] = "0x%X" % (
-                int(self.tpm_policy['mask'], 0) | (1 << config.IMA_PCR))
-
-            # Add all IMA file signing verification keys to a keyring
-            ima_keyring = ima_file_signatures.ImaKeyring()
-            for filename in args["ima_sign_verification_keys"]:
-                pubkey = ima_file_signatures.get_pubkey_from_file(filename)
-                if not pubkey:
-                    raise UserError("File '%s' is not a file with a key" % filename)
-                ima_keyring.add_pubkey(pubkey)
-            self.ima_sign_verification_keys = ima_keyring.to_string()
-
-        # Read command-line path string allowlist
-        al_data = None
-        if "allowlist" in args and args["allowlist"] is not None:
-
-            # Auto-enable IMA (or-bit mask)
-            self.tpm_policy['mask'] = "0x%X" % (
-                int(self.tpm_policy['mask'], 0) | (1 << config.IMA_PCR))
-
-            if isinstance(args["allowlist"], str):
-                if args["allowlist"] == "default":
-                    args["allowlist"] = config.get(
-                        'tenant', 'allowlist')
-                al_data = ima.read_allowlist(args["allowlist"])
-            elif isinstance(args["allowlist"], list):
-                al_data = args["allowlist"]
-            else:
-                raise UserError("Invalid allowlist provided")
-
-        # Read command-line path string IMA exclude list
-        excl_data = None
-        if "ima_exclude" in args and args["ima_exclude"] is not None:
-            if isinstance(args["ima_exclude"], str):
-                if args["ima_exclude"] == "default":
-                    args["ima_exclude"] = config.get(
-                        'tenant', 'ima_excludelist')
-                excl_data = ima.read_excllist(args["ima_exclude"])
-            elif isinstance(args["ima_exclude"], list):
-                excl_data = args["ima_exclude"]
-            else:
-                raise UserError("Invalid exclude list provided")
-
-        # Set up IMA
-        if TPM_Utilities.check_mask(self.tpm_policy['mask'], config.IMA_PCR) or \
-                TPM_Utilities.check_mask(self.vtpm_policy['mask'], config.IMA_PCR):
-
-            # Process allowlists
-            self.allowlist = ima.process_allowlists(al_data, excl_data)
+        self.process_allowlist(args)
 
         # if none
         if (args["file"] is None and args["keyfile"] is None and args["ca_dir"] is None):
@@ -889,6 +893,36 @@ class Tenant():
                 continue
             break
 
+    def do_add_allowlist(self, args):
+        if 'allowlist_name' not in args or not args['allowlist_name']:
+            raise UserError('allowlist_name is required to add an allowlist')
+
+        allowlist_name = args['allowlist_name']
+        self.process_allowlist(args)
+        data = {
+            'tpm_policy': json.dumps(self.tpm_policy),
+            'vtpm_policy': json.dumps(self.vtpm_policy),
+            'allowlist': json.dumps(self.allowlist)
+        }
+        body = json.dumps(data)
+        cv_client = RequestsClient(self.verifier_base_url, self.tls_enabled)
+        response = cv_client.post(f'/allowlists/{allowlist_name}', data=body,
+                                  cert=self.cert, verify=False)
+        print(response.json())
+
+    def do_delete_allowlist(self, name):
+        cv_client = RequestsClient(self.verifier_base_url, self.tls_enabled)
+        response = cv_client.delete(f'/allowlists/{name}',
+                                    cert=self.cert, verify=False)
+        print(response.json())
+
+    def do_show_allowlist(self, name):
+        cv_client = RequestsClient(self.verifier_base_url, self.tls_enabled)
+        response = cv_client.get(f'/allowlists/{name}',
+                                 cert=self.cert, verify=False)
+        print(f"Show allowlist command response: {response.status_code}.")
+        print(response.json())
+
 
 def main(argv=sys.argv):
     """[summary]
@@ -936,11 +970,14 @@ def main(argv=sys.argv):
                         default=None, help="Specify a vTPM policy in JSON format")
     parser.add_argument('--verify', action='store_true', default=False,
                         help='Block on cryptographically checked key derivation confirmation from the agent once it has been provisioned')
+    parser.add_argument('--allowlist-name', help='The name of allowlist to operate with')
 
     args = parser.parse_args(argv[1:])
     mytenant = Tenant()
 
-    if args.command not in ['list', 'regdelete', 'reglist', 'delete', 'status'] and args.agent_ip is None:
+    if args.command not in ['list', 'regdelete', 'delete', 'status',
+                            'addallowlist', 'deleteallowlist',
+                            'showallowlist'] and args.agent_ip is None:
         raise UserError(
             f"-t/--targethost is required for command {args.command}")
 
@@ -995,5 +1032,11 @@ def main(argv=sys.argv):
         mytenant.do_reglist()
     elif args.command == 'regdelete':
         mytenant.do_regdelete()
+    elif args.command == 'addallowlist':
+        mytenant.do_add_allowlist(vars(args))
+    elif args.command == 'showallowlist':
+        mytenant.do_show_allowlist(args.allowlist_name)
+    elif args.command == 'deleteallowlist':
+        mytenant.do_delete_allowlist(args.allowlist_name)
     else:
         raise UserError("Invalid command specified: %s" % (args.command))
