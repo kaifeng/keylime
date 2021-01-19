@@ -17,8 +17,7 @@ import tornado.web
 
 from keylime import config
 from keylime.common import states
-from keylime.db.verifier_db import VerfierMain
-from keylime.db.verifier_db import VerifierAllowlist
+from keylime.db.verifier_db import VerfierMain, VerifierAllowlist
 from keylime.db.keylime_db import DBEngineManager, SessionManager
 from keylime import keylime_logging
 from keylime import cloud_verifier_common
@@ -55,18 +54,28 @@ exclude_db = {
 
 def _from_db_obj(agent_db_obj):
     fields = ['agent_id', 'v', 'ip', 'port',
-              'operational_state', 'public_key',
-              'tpm_policy', 'vtpm_policy', 'meta_data',
-              'allowlist', 'ima_sign_verification_keys', 'revocation_key',
+              'operational_state', 'public_key', 'meta_data',
+			  'ima_sign_verification_keys', 'revocation_key',
               'tpm_version',
               'accept_tpm_hash_algs',
               'accept_tpm_encryption_algs',
               'accept_tpm_signing_algs',
-              'hash_alg', 'enc_alg', 'sign_alg']
+              'hash_alg', 'enc_alg', 'sign_alg', 'allowlist_id']
     agent_dict = {}
     for field in fields:
         agent_dict[field] = getattr(agent_db_obj, field, None)
     return agent_dict
+
+
+def load_allowlist(allowlist_id):
+    session = get_session()
+    allowlist = session.query(VerifierAllowlist).filter_by(
+        id=allowlist_id).one()
+    allowlist_data = {}
+    for field in ('name', 'tpm_policy', 'vtpm_policy', 'allowlist'):
+        allowlist_data[field] = getattr(allowlist, field, None)
+
+    return allowlist_data
 
 
 class BaseHandler(tornado.web.RequestHandler):
@@ -271,10 +280,7 @@ class AgentsHandler(BaseHandler):
                     agent_data['port'] = int(json_body['cloudagent_port'])
                     agent_data['operational_state'] = states.START
                     agent_data['public_key'] = ""
-                    agent_data['tpm_policy'] = json_body['tpm_policy']
-                    agent_data['vtpm_policy'] = json_body['vtpm_policy']
                     agent_data['meta_data'] = json_body['metadata']
-                    agent_data['allowlist'] = json_body['allowlist']
                     agent_data['ima_sign_verification_keys'] = json_body['ima_sign_verification_keys']
                     agent_data['revocation_key'] = json_body['revocation_key']
                     agent_data['tpm_version'] = 0
@@ -286,7 +292,7 @@ class AgentsHandler(BaseHandler):
                     agent_data['sign_alg'] = ""
                     agent_data['agent_id'] = agent_id
 
-                    is_valid, err_msg = cloud_verifier_common.validate_agent_data(agent_data)
+                    is_valid, err_msg = cloud_verifier_common.validate_agent_data(json_body['allowlist'])
                     if not is_valid:
                         config.echo_json_response(self, 400, err_msg)
                         logger.warning(err_msg)
@@ -306,8 +312,20 @@ class AgentsHandler(BaseHandler):
                         logger.warning(
                             "Agent of uuid %s already exists" % (agent_id))
                     else:
+                        allowlist_data = {}
+                        # NOTE(kaifeng) Auto create allowlist named agent_id
+                        allowlist_data['name'] = agent_id
+                        allowlist_data['tpm_policy'] = json_body['tpm_policy']
+                        allowlist_data['vtpm_policy'] = json_body['vtpm_policy']
+                        allowlist_data['allowlist'] = json_body['allowlist']
+
                         try:
-                            # Add the agent and data
+                            # Add the agent and allowlist
+                            session.add(VerifierAllowlist(**allowlist_data))
+                            session.flush()
+                            allowlist = session.query(VerifierAllowlist).filter_by(
+                                name=agent_id).one()
+                            agent_data['allowlist_id'] = allowlist.id
                             session.add(VerfierMain(**agent_data))
                             session.commit()
                         except SQLAlchemyError as e:

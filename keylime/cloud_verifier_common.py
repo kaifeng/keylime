@@ -12,6 +12,7 @@ import time
 
 import simplejson as json
 
+from keylime import cloud_verifier_tornado
 from keylime import config
 from keylime import keylime_logging
 from keylime import registrar_client
@@ -187,6 +188,8 @@ def process_quote_response(agent, json_response):
         raise Exception(
             "TPM Quote is using an unaccepted signing algorithm: %s" % sign_alg)
 
+    allowlist = cloud_verifier_tornado.load_allowlist(agent['allowlist_id'])
+
     if tpm.is_deep_quote(quote):
         validQuote = tpm.check_deep_quote(agent['agent_id'],
                                           agent['nonce'],
@@ -194,10 +197,10 @@ def process_quote_response(agent, json_response):
                                           quote,
                                           agent['registrar_keys']['aik'],
                                           agent['registrar_keys']['provider_keys']['aik'],
-                                          agent['vtpm_policy'],
-                                          agent['tpm_policy'],
+                                          allowlist['vtpm_policy'],
+                                          allowlist['tpm_policy'],
                                           ima_measurement_list,
-                                          agent['allowlist'])
+                                          allowlist['allowlist'])
     else:
         ima_keyring = ima_file_signatures.ImaKeyring.from_string(agent['ima_sign_verification_keys'])
         validQuote = tpm.check_quote(agent['agent_id'],
@@ -205,9 +208,9 @@ def process_quote_response(agent, json_response):
                                      received_public_key,
                                      quote,
                                      agent['registrar_keys']['aik'],
-                                     agent['tpm_policy'],
+                                     allowlist['tpm_policy'],
                                      ima_measurement_list,
-                                     agent['allowlist'],
+                                     allowlist['allowlist'],
                                      hash_alg,
                                      ima_keyring)
     if not validQuote:
@@ -256,8 +259,9 @@ def prepare_get_quote(agent):
     """
     agent['nonce'] = TPM_Utilities.random_password(20)
 
-    tpm_policy = ast.literal_eval(agent['tpm_policy'])
-    vtpm_policy = ast.literal_eval(agent['vtpm_policy'])
+    allowlist = cloud_verifier_tornado.load_allowlist(agent['allowlist_id'])
+    tpm_policy = ast.literal_eval(allowlist['tpm_policy'])
+    vtpm_policy = ast.literal_eval(allowlist['vtpm_policy'])
 
     params = {
         'nonce': agent['nonce'],
@@ -268,8 +272,14 @@ def prepare_get_quote(agent):
 
 
 def process_get_status(agent):
-    allowlist = ast.literal_eval(agent.allowlist)
-    if isinstance(allowlist, dict) and 'allowlist' in allowlist:
+    # allowlist = ast.literal_eval(agent.allowlist)
+    # if isinstance(allowlist, dict) and 'allowlist' in allowlist:
+    #     al_len = len(allowlist['allowlist'])
+    # else:
+    #     al_len = 0
+    allowlist = cloud_verifier_tornado.load_allowlist(agent.allowlist_id)
+    print('process_get_status: allowlist %s' % allowlist)
+    if 'allowlist' in allowlist:
         al_len = len(allowlist['allowlist'])
     else:
         al_len = 0
@@ -277,8 +287,8 @@ def process_get_status(agent):
                 'v': agent.v,
                 'ip': agent.ip,
                 'port': agent.port,
-                'tpm_policy': agent.tpm_policy,
-                'vtpm_policy': agent.vtpm_policy,
+                'tpm_policy': allowlist.get('tpm_policy'),
+                'vtpm_policy': allowlist.get('vtpm_policy'),
                 'meta_data': agent.meta_data,
                 'allowlist_len': al_len,
                 'tpm_version': agent.tpm_version,
@@ -321,12 +331,9 @@ def notify_error(agent, msgtype='revocation'):
     revocation_notifier.notify(tosend)
 
 
-def validate_agent_data(agent_data):
-    if agent_data is None:
-        return False, None
-
+def validate_agent_data(allowlist):
     # validate that the allowlist is proper JSON
-    lists = json.loads(agent_data['allowlist'])
+    lists = json.loads(allowlist)
 
     # Validate exlude list contains valid regular expressions
     is_valid, _, err_msg = config.valid_exclude_list(lists.get('exclude'))

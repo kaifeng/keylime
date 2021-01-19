@@ -7,7 +7,7 @@ import simplejson as json
 
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, String, Integer, PickleType, Text
-from sqlalchemy import schema
+from sqlalchemy import schema, ForeignKey
 
 
 Base = declarative_base()
@@ -26,10 +26,7 @@ class VerfierMain(Base):
     port = Column(Integer)
     operational_state = Column(Integer)
     public_key = Column(String(500))
-    tpm_policy = Column(String(1000))
-    vtpm_policy = Column(String(1000))
     meta_data = Column(String(200))
-    allowlist = Column(Text(429400000))
     ima_sign_verification_keys = Column(String(1048576))
     revocation_key = Column(String(2800))
     tpm_version = Column(Integer)
@@ -39,6 +36,8 @@ class VerfierMain(Base):
     hash_alg = Column(String(10))
     enc_alg = Column(String(10))
     sign_alg = Column(String(10))
+    allowlist_id = Column(Integer, ForeignKey('allowlists.id', name='fk_verifiermain_allowlists'),
+                          nullable=True)
 
 
 class VerifierAllowlist(Base):
